@@ -120,9 +120,30 @@ const extractVideoId = (urlOrId: string): string | null => {
   return null;
 };
 
-const app = new Hono();
+// Define Environment Bindings Type
+type Env = {
+  RATE_LIMITER: {
+    limit: (config: { key: string }) => Promise<{ success: boolean }>;
+  };
+  // Add other bindings from wrangler.toml if any
+};
+
+const app = new Hono<{ Bindings: Env }>();
 
 app.get('/', async (c: Context) => {
+  // --- Rate Limiting Start ---
+  // Use the client's IP address as the key for rate limiting
+  // Fallback to 'unknown-ip' if the header is somehow missing
+  const ipAddress = c.req.raw.headers.get('cf-connecting-ip') || 'unknown-ip'; 
+  const { success } = await c.env.RATE_LIMITER.limit({ key: ipAddress });
+
+  if (!success) {
+    console.log(`Rate limit exceeded for IP: ${ipAddress}`);
+    // Return a 429 Too Many Requests response if the limit is hit
+    return c.json({ error: "Rate limit exceeded. Please try again in a minute." }, 429);
+  }
+  // --- Rate Limiting End ---
+
   const videoUrlOrId = c.req.query('id');
 
   if (!videoUrlOrId) {
