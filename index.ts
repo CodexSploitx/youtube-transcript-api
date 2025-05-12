@@ -165,6 +165,7 @@ app.get('/', async (c: Context) => {
     });
 
     const info = await youtube.getInfo(videoId);
+    console.log(info);
     const videoTitle = info.basic_info?.title || 'Untitled Video';
     const transcriptData = await info.getTranscript();
 
