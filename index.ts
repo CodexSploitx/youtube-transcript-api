@@ -1,5 +1,4 @@
-import { Hono, Context } from 'hono';
-import { ContentfulStatusCode } from 'hono/utils/http-status';
+import express, { Request, Response } from 'express';
 import { Innertube } from 'youtubei.js';
 
 // Define interfaces for better type safety (same as before)
@@ -120,49 +119,29 @@ const extractVideoId = (urlOrId: string): string | null => {
   return null;
 };
 
-// Define Environment Bindings Type
-type Env = {
-  RATE_LIMITER: {
-    limit: (config: { key: string }) => Promise<{ success: boolean }>;
-  };
-  // Add other bindings from wrangler.toml if any
-};
+const app = express();
 
-const app = new Hono<{ Bindings: Env }>();
+// Middleware para parsear JSON
+app.use(express.json());
 
-app.get('/', async (c: Context) => {
-  // --- Rate Limiting Start ---
-  // Use the client's IP address as the key for rate limiting
-  // Fallback to 'unknown-ip' if the header is somehow missing
-  const ipAddress = c.req.raw.headers.get('cf-connecting-ip') || 'unknown-ip'; 
-  const { success } = await c.env.RATE_LIMITER.limit({ key: ipAddress });
-
-  if (!success) {
-    console.log(`Rate limit exceeded for IP: ${ipAddress}`);
-    // Return a 429 Too Many Requests response if the limit is hit
-    return c.json({ error: "Rate limit exceeded. Please try again in a minute." }, 429);
-  }
-  // --- Rate Limiting End ---
-
-  const videoUrlOrId = c.req.query('id');
+// Endpoint principal
+app.get('/', async (req: Request, res: Response) => {
+  const videoUrlOrId = req.query.id as string;
 
   if (!videoUrlOrId) {
-    return c.json({ error: "Video ID or URL is required (query param: 'id')" }, 400);
+    return res.status(400).json({ error: "Video ID or URL is required (query param: 'id')" });
   }
 
   const videoId = extractVideoId(videoUrlOrId);
 
   if (!videoId) {
-    return c.json({ error: "Invalid YouTube Video ID or URL format" }, 400);
+    return res.status(400).json({ error: "Invalid YouTube Video ID or URL format" });
   }
 
   try {
     console.log(`Fetching transcript for video ID: ${videoId}`);
-    const youtube = await Innertube.create({
-      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        return globalThis.fetch(input, init);
-      }
-    });
+
+    const youtube = await Innertube.create();
 
     const info = await youtube.getInfo(videoId);
     console.log(info);
@@ -171,7 +150,7 @@ app.get('/', async (c: Context) => {
 
     if (!transcriptData || !transcriptData.transcript || !transcriptData.transcript.content || 
         !transcriptData.transcript.content.body || !transcriptData.transcript.content.body.initial_segments) {
-      return c.json({ videoTitle, error: "No transcript available for this video." }, 404);
+      return res.status(404).json({ videoTitle, error: "No transcript available for this video." });
     }
 
     const segments = transcriptData.transcript.content.body.initial_segments || [];
@@ -209,13 +188,13 @@ app.get('/', async (c: Context) => {
       return { text, offset, duration };
     }).filter((s: { text: string; offset: number; duration: number }) => s.text);
 
-    return c.json({ videoTitle: decodeHtmlEntities(videoTitle), transcript: formattedTranscript });
+    return res.json({ videoTitle: decodeHtmlEntities(videoTitle), transcript: formattedTranscript });
 
   } catch (error: unknown) {
     const err = error as Error;
     console.error(`Error fetching transcript for ${videoId}:`, err.message, err.stack);
     let errorMessage = "Failed to fetch transcript.";
-    let statusCode: ContentfulStatusCode = 500;
+    let statusCode = 500;
 
     if (err instanceof SyntaxError && err.message.includes("JSON")) {
       errorMessage = "Failed to process data from YouTube. The API response may be malformed or incomplete.";
@@ -230,8 +209,16 @@ app.get('/', async (c: Context) => {
         statusCode = 404;
     }
     
-    return c.json({ error: errorMessage, videoId }, statusCode);
+    return res.status(statusCode).json({ error: errorMessage, videoId });
   }
+});
+
+// Puerto por defecto o desde variable de entorno
+const PORT = process.env.PORT || 3000;
+
+// Iniciar servidor
+app.listen(PORT, () => {
+  console.log(`YouTube Transcript API server running on port ${PORT}`);
 });
 
 export default app;
