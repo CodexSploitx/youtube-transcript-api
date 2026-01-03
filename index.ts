@@ -142,10 +142,22 @@ async function fetchTranscriptWithYtDlp(videoId: string): Promise<any[]> {
     const uniqueId = Math.random().toString(36).substring(7);
     const outputPath = path.join(tempDir, `${videoId}_${uniqueId}`);
     
-    // yt-dlp command: download subs (manual or auto), skip video
-    const command = `yt-dlp --write-auto-sub --write-sub --sub-lang en --skip-download --output "${outputPath}" --no-warnings https://www.youtube.com/watch?v=${videoId}`;
+    // Array of common User-Agents for rotation to avoid bot detection
+    const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ];
+
+    // Select a random User-Agent
+    const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+
+    // yt-dlp command: download subs (manual or auto), skip video, use specific user agent
+    const command = `yt-dlp --write-auto-sub --write-sub --sub-lang en --skip-download --output "${outputPath}" --no-warnings --user-agent "${userAgent}" https://www.youtube.com/watch?v=${videoId}`;
     
-    console.log(`Executing yt-dlp for ${videoId}...`);
+    console.log(`Executing yt-dlp for ${videoId} with User-Agent: ${userAgent}...`);
     try {
         await execPromise(command);
     } catch (error) {
