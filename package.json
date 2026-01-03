@@ -2,6 +2,7 @@
   "name": "youtube-transcript-api",
   "version": "0.1.0",
   "description": "YouTube Transcript API server built with Node.js, Express and TypeScript",
+  "type": "module",
   "main": "dist/index.js",
   "private": true,
   "scripts": {

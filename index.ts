@@ -1,11 +1,17 @@
-import express, { Request, Response } from 'express';
+import express from 'express';
+import type { Request, Response } from 'express';
 import { Innertube } from 'youtubei.js';
 import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import util from 'util';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 // @ts-ignore
-import nodeWebVtt = require('node-webvtt');
+import nodeWebVtt from 'node-webvtt';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const execPromise = util.promisify(exec);
 
