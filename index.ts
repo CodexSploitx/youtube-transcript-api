@@ -152,8 +152,12 @@ async function fetchTranscriptWithYtDlp(videoId: string): Promise<any[]> {
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ];
 
+    
+
     // Select a random User-Agent
     const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+    // Log the selected User-Agent for debugging
+    console.log(`Selected User-Agent: ${userAgent}`);
 
     // Proxy logic: Check for PROXIES environment variable (comma separated)
     const proxiesEnv = process.env.PROXIES || '';
@@ -197,14 +201,19 @@ async function fetchTranscriptWithYtDlp(videoId: string): Promise<any[]> {
         console.error('Error deleting temp file:', e);
     }
 
-    const parsed = nodeWebVtt.parse(vttContent, { meta: true });
-    
-    if (parsed && parsed.cues) {
-        return parsed.cues.map((cue: any) => ({
-            text: cue.text,
-            offset: cue.start,
-            duration: cue.end - cue.start
-        }));
+    try {
+        const parsed = nodeWebVtt.parse(vttContent, { meta: true });
+        
+        if (parsed && parsed.cues) {
+            return parsed.cues.map((cue: any) => ({
+                text: cue.text,
+                offset: cue.start,
+                duration: cue.end - cue.start
+            }));
+        }
+    } catch (e) {
+        console.error('Error parsing VTT content:', e);
+        throw new Error('Failed to parse VTT content');
     }
     
     return [];
