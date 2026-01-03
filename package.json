@@ -12,6 +12,7 @@
     "start:dev": "npm run build && npm run start"
   },
   "dependencies": {
+    "dotenv": "^17.2.3",
     "express": "^4.18.2",
     "node-webvtt": "^1.9.4",
     "youtube-transcript": "^1.2.1",

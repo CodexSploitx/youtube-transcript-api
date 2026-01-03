@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import type { Request, Response } from 'express';
 import { Innertube } from 'youtubei.js';
@@ -154,8 +155,22 @@ async function fetchTranscriptWithYtDlp(videoId: string): Promise<any[]> {
     // Select a random User-Agent
     const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
 
-    // yt-dlp command: download subs (manual or auto), skip video, use specific user agent
-    const command = `yt-dlp --write-auto-sub --write-sub --sub-lang en --skip-download --output "${outputPath}" --no-warnings --user-agent "${userAgent}" https://www.youtube.com/watch?v=${videoId}`;
+    // Proxy logic: Check for PROXIES environment variable (comma separated)
+    const proxiesEnv = process.env.PROXIES || '';
+    const proxies = proxiesEnv.split(',').map(p => p.trim()).filter(p => p.length > 0);
+    let proxyArgs = '';
+
+    if (proxies.length > 0) {
+        const proxy = proxies[Math.floor(Math.random() * proxies.length)];
+        // yt-dlp expects --proxy URL
+        proxyArgs = `--proxy "${proxy}"`;
+        console.log(`Using proxy for yt-dlp (one of ${proxies.length} available)`);
+    } else {
+        console.log('No proxies configured (PROXIES env var empty). Running directly.');
+    }
+
+    // yt-dlp command: download subs (manual or auto), skip video, use specific user agent and optional proxy
+    const command = `yt-dlp --write-auto-sub --write-sub --sub-lang en --skip-download --output "${outputPath}" --no-warnings --user-agent "${userAgent}" ${proxyArgs} https://www.youtube.com/watch?v=${videoId}`;
     
     console.log(`Executing yt-dlp for ${videoId} with User-Agent: ${userAgent}...`);
     try {
