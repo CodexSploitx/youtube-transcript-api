@@ -1,7 +1,15 @@
 import express, { Request, Response } from 'express';
 import { Innertube } from 'youtubei.js';
+import { exec } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import util from 'util';
+// @ts-ignore
+import nodeWebVtt = require('node-webvtt');
 
-// Define interfaces for better type safety (same as before)
+const execPromise = util.promisify(exec);
+
+// Define interfaces for better type safety
 interface TextRun {
   text: string;
 }
@@ -33,7 +41,6 @@ interface CueGroupRenderer {
   };
 }
 
-// Interface for a more generic segment if not matching TSR or CGR
 interface GenericSegment {
   text?: string | Snippet;
   runs?: TextRun[];
@@ -43,7 +50,6 @@ interface GenericSegment {
   duration_ms?: string;
 }
 
-// A union type for the possible segment structures
 type AnySegment = TranscriptSegmentRenderer | CueGroupRenderer | GenericSegment;
 
 // Helper function to decode HTML entities
@@ -119,12 +125,62 @@ const extractVideoId = (urlOrId: string): string | null => {
   return null;
 };
 
+// Function to fetch transcript using yt-dlp
+async function fetchTranscriptWithYtDlp(videoId: string): Promise<any[]> {
+    const tempDir = path.join(__dirname, 'temp_transcripts');
+    if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir);
+    }
+    
+    // Unique ID to avoid collisions
+    const uniqueId = Math.random().toString(36).substring(7);
+    const outputPath = path.join(tempDir, `${videoId}_${uniqueId}`);
+    
+    // yt-dlp command: download subs (manual or auto), skip video
+    const command = `yt-dlp --write-auto-sub --write-sub --sub-lang en --skip-download --output "${outputPath}" --no-warnings https://www.youtube.com/watch?v=${videoId}`;
+    
+    console.log(`Executing yt-dlp for ${videoId}...`);
+    try {
+        await execPromise(command);
+    } catch (error) {
+        console.error('yt-dlp execution failed:', error);
+        throw error;
+    }
+
+    const generatedFiles = fs.readdirSync(tempDir);
+    const vttFile = generatedFiles.find(f => f.startsWith(`${videoId}_${uniqueId}`) && f.endsWith('.vtt'));
+
+    if (!vttFile) {
+        throw new Error('No transcript found (yt-dlp)');
+    }
+
+    const vttPath = path.join(tempDir, vttFile);
+    const vttContent = fs.readFileSync(vttPath, 'utf-8');
+    
+    // Cleanup
+    try {
+        fs.unlinkSync(vttPath);
+    } catch (e) {
+        console.error('Error deleting temp file:', e);
+    }
+
+    const parsed = nodeWebVtt.parse(vttContent, { meta: true });
+    
+    if (parsed && parsed.cues) {
+        return parsed.cues.map((cue: any) => ({
+            text: cue.text,
+            offset: cue.start,
+            duration: cue.end - cue.start
+        }));
+    }
+    
+    return [];
+}
+
 const app = express();
 
-// Middleware para parsear JSON
 app.use(express.json());
 
-// Endpoint principal
 app.get('/', async (req: Request, res: Response) => {
   const videoUrlOrId = req.query.id as string;
 
@@ -139,72 +195,81 @@ app.get('/', async (req: Request, res: Response) => {
   }
 
   try {
-    console.log(`Fetching transcript for video ID: ${videoId}`);
-
-    const youtube = await Innertube.create();
-
-    const info = await youtube.getInfo(videoId);
-    console.log(info);
-    const videoTitle = info.basic_info?.title || 'Untitled Video';
-    const transcriptData = await info.getTranscript();
-
-    if (!transcriptData || !transcriptData.transcript || !transcriptData.transcript.content || 
-        !transcriptData.transcript.content.body || !transcriptData.transcript.content.body.initial_segments) {
-      return res.status(404).json({ videoTitle, error: "No transcript available for this video." });
+    console.log(`Fetching info for video ID: ${videoId}`);
+    
+    let videoTitle = 'Untitled Video';
+    let formattedTranscript: any[] = [];
+    
+    // Try to get info first using Innertube (faster for metadata)
+    try {
+        const youtube = await Innertube.create();
+        const info = await youtube.getInfo(videoId);
+        videoTitle = info.basic_info?.title || 'Untitled Video';
+        
+        // Try to get transcript with Innertube first
+        console.log('Attempting to fetch transcript with youtubei.js...');
+        const transcriptData = await info.getTranscript();
+        
+        if (transcriptData && transcriptData.transcript && transcriptData.transcript.content && 
+            transcriptData.transcript.content.body && transcriptData.transcript.content.body.initial_segments) {
+            
+            const segments = transcriptData.transcript.content.body.initial_segments;
+            formattedTranscript = segments.map((segment: AnySegment) => {
+              let text = '';
+              let offset = 0;
+              let duration = 0;
+        
+              if (segment && 'transcript_segment_renderer' in segment && segment.transcript_segment_renderer) {
+                const tsr = segment.transcript_segment_renderer as TranscriptSegmentRenderer;
+                text = decodeHtmlEntities(extractTextFromSegment(tsr));
+                offset = parseFloat(tsr.start_ms || '0') / 1000;
+                duration = (parseFloat(tsr.end_ms || '0') - parseFloat(tsr.start_ms || '0')) / 1000;
+              } else if (segment && 'cue_group_renderer' in segment && segment.cue_group_renderer?.cues?.[0]?.cue_renderer) {
+                const cue = segment.cue_group_renderer.cues[0].cue_renderer;
+                text = decodeHtmlEntities(extractTextFromSegment(cue));
+                offset = parseFloat(cue.start_offset_ms || '0') / 1000;
+                duration = parseFloat(cue.duration_ms || '0') / 1000;
+              } else {
+                text = decodeHtmlEntities(extractTextFromSegment(segment));
+                // Try to extract timing if available in GenericSegment
+                const genericSegment = segment as GenericSegment;
+                 if (genericSegment.start_ms) offset = parseFloat(genericSegment.start_ms) / 1000;
+                 if (genericSegment.end_ms && genericSegment.start_ms) duration = (parseFloat(genericSegment.end_ms) - parseFloat(genericSegment.start_ms)) / 1000;
+              }
+              return { text, offset, duration };
+            }).filter((s: { text: string; offset: number; duration: number }) => s.text);
+        }
+    } catch (innertubeError) {
+        console.warn('Innertube failed (metadata or transcript), falling back to yt-dlp:', innertubeError);
+        // If metadata failed, we might still want to try yt-dlp, but we won't have the title easily unless we parse it from yt-dlp too.
+        // For now, let's proceed to yt-dlp fallback.
     }
 
-    const segments = transcriptData.transcript.content.body.initial_segments || [];
-    const formattedTranscript = segments.map((segment: AnySegment) => {
-      let text = '';
-      let offset = 0;
-      let duration = 0;
+    // If transcript is empty, try yt-dlp
+    if (formattedTranscript.length === 0) {
+        console.log('Falling back to yt-dlp for transcript...');
+        try {
+            formattedTranscript = await fetchTranscriptWithYtDlp(videoId);
+            console.log(`Fetched ${formattedTranscript.length} lines with yt-dlp`);
+        } catch (ytdlpError) {
+            console.error('yt-dlp fallback also failed:', ytdlpError);
+            throw new Error('Failed to fetch transcript from both sources.');
+        }
+    }
 
-      if (segment && 'transcript_segment_renderer' in segment && segment.transcript_segment_renderer) {
-        const tsr = segment.transcript_segment_renderer as TranscriptSegmentRenderer;
-        text = decodeHtmlEntities(extractTextFromSegment(tsr));
-        offset = parseFloat(tsr.start_ms || '0') / 1000;
-        duration = (parseFloat(tsr.end_ms || '0') - parseFloat(tsr.start_ms || '0')) / 1000;
-      } else if (segment && 'cue_group_renderer' in segment && segment.cue_group_renderer?.cues?.[0]?.cue_renderer) {
-        const cue = segment.cue_group_renderer.cues[0].cue_renderer;
-        text = decodeHtmlEntities(extractTextFromSegment(cue));
-        offset = parseFloat(cue.start_offset_ms || '0') / 1000;
-        duration = parseFloat(cue.duration_ms || '0') / 1000;
-      } else {
-        text = decodeHtmlEntities(extractTextFromSegment(segment));
-        offset = 0;
-        duration = 0;
-        // segment here is narrowed to GenericSegment or the parts of AnySegment not caught above
-        const genericSegment = segment as GenericSegment;
-        if (genericSegment.start_ms && typeof genericSegment.start_ms === 'string') {
-          offset = parseFloat(genericSegment.start_ms) / 1000;
-        }
-        if (genericSegment.duration_ms && typeof genericSegment.duration_ms === 'string') {
-          duration = parseFloat(genericSegment.duration_ms) / 1000;
-        } else if (genericSegment.end_ms && typeof genericSegment.end_ms === 'string' && 
-                   genericSegment.start_ms && typeof genericSegment.start_ms === 'string') {
-          duration = (parseFloat(genericSegment.end_ms) - parseFloat(genericSegment.start_ms)) / 1000;
-        }
-      }
-      return { text, offset, duration };
-    }).filter((s: { text: string; offset: number; duration: number }) => s.text);
+    if (formattedTranscript.length === 0) {
+         return res.status(404).json({ videoTitle, error: "No transcript available for this video." });
+    }
 
     return res.json({ videoTitle: decodeHtmlEntities(videoTitle), transcript: formattedTranscript });
 
   } catch (error: unknown) {
     const err = error as Error;
-    console.error(`Error fetching transcript for ${videoId}:`, err.message, err.stack);
+    console.error(`Error fetching transcript for ${videoId}:`, err.message);
     let errorMessage = "Failed to fetch transcript.";
     let statusCode = 500;
 
-    if (err instanceof SyntaxError && err.message.includes("JSON")) {
-      errorMessage = "Failed to process data from YouTube. The API response may be malformed or incomplete.";
-    } else if (err.message.includes('private') || err.message.includes('unavailable') || err.message.includes('premiere') || err.message.includes('live')) {
-      errorMessage = "Video is private, unavailable, a live stream, or a premiere without a processed transcript.";
-      statusCode = 403;
-    } else if (err.message.includes(' অঞ্চলের কারণে') || err.message.includes('region-locked')) { // Example for region-locked, may need adjustment
-      errorMessage = "The video is region-locked and unavailable.";
-      statusCode = 451; // Unavailable For Legal Reasons
-    } else if (err.message.includes('Transcripts are not available for this video')) {
+    if (err.message.includes('No transcript found')) {
         errorMessage = "Transcripts are not available for this video.";
         statusCode = 404;
     }
@@ -213,10 +278,8 @@ app.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// Puerto por defecto o desde variable de entorno
 const PORT = process.env.PORT || 3000;
 
-// Iniciar servidor
 app.listen(PORT, () => {
   console.log(`YouTube Transcript API server running on port ${PORT}`);
 });
